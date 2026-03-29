@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { Task } from "./types.js";
 import { assertTasksShape } from "./types.js";
 
@@ -27,66 +28,10 @@ export const resolveChatModelId = (raw: string | undefined): string => {
   );
 };
 
-/** Stricter than API max: keeps generated descriptions scannable. */
-const MAX_GENERATED_DESCRIPTION_LENGTH = 6000;
-
 const PRIMARY_LABELS = ["frontend", "backend", "infra", "tech-debt"] as const;
 type PrimaryLabel = (typeof PRIMARY_LABELS)[number];
 
 const PRIMARY_LABEL_SET: ReadonlySet<string> = new Set(PRIMARY_LABELS);
-
-const BROAD_TITLE_PATTERNS: readonly RegExp[] = [
-  /\bimplement\s+(the\s+)?(full|entire|complete|whole)\b/i,
-  /\bbuild\s+(the\s+)?(full|entire|complete|whole)\b/i,
-  /\bcreate\s+(the\s+)?(full|entire|complete|whole)\b/i,
-  /\b(full|entire|complete)\s+(feature|system|application|app|product|platform)\b/i,
-  /\bbuild\s+system\b/i,
-  /\bumbrella\b/i,
-  /^do\s+everything\b/i,
-  /\ball\s+features\b/i,
-];
-
-const escapeRegex = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const extractSectionBody = (markdown: string, sectionTitle: string): string | null => {
-  const lines = markdown.split(/\r?\n/);
-  const headerRe = new RegExp(`^##\\s+${escapeRegex(sectionTitle)}\\s*$`);
-  let start = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line !== undefined && headerRe.test(line)) {
-      start = i + 1;
-      break;
-    }
-  }
-  if (start === -1) {
-    return null;
-  }
-  const body: string[] = [];
-  for (let i = start; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line === undefined) {
-      break;
-    }
-    if (/^##\s+/.test(line)) {
-      break;
-    }
-    body.push(line);
-  }
-  const joined = body.join("\n").trim();
-  return joined.length > 0 ? joined : null;
-};
-
-const scopeImpliesFrontend = (scope: string): boolean =>
-  /\b(page|pages|component|components|ui|layout|modal|form|forms|css|styling|tailwind|client state|react|vue|svelte|browser)\b/i.test(
-    scope,
-  );
-
-const scopeImpliesBackend = (scope: string): boolean =>
-  /\b(api|apis|endpoint|endpoints|rest|graphql|database|db|migration|postgres|mysql|auth(n|orization)?|server|service layer|business logic)\b/i.test(
-    scope,
-  );
 
 const canonicalizePrimaryLabel = (raw: string): PrimaryLabel => {
   const key = raw.trim().toLowerCase();
@@ -96,8 +41,73 @@ const canonicalizePrimaryLabel = (raw: string): PrimaryLabel => {
   throw new Error(`Invalid primary label: ${raw}`);
 };
 
+const buildAcceptanceCriteriaFromTask = (task: Task): string[] => {
+  const primary = task.labels[0]?.trim().toLowerCase() ?? "";
+  const titleT = task.title.trim();
+  const descT = task.description.trim();
+
+  if (primary === "backend") {
+    return [
+      "API returns expected response for valid input",
+      "Invalid input returns appropriate error response",
+    ];
+  }
+
+  if (primary === "frontend") {
+    return [
+      "UI renders correctly based on requirements",
+      "User interactions trigger expected behavior",
+    ];
+  }
+
+  return [
+    titleT.length > 0 ? `Deliverable satisfies: ${titleT}` : "Feature behaves according to requirements",
+    descT.length > 0 ? "Behavior matches the issue description" : "Edge cases are handled correctly",
+  ];
+};
+
+const stripAcceptanceCriteriaSection = (markdown: string): string => {
+  const lines = markdown.split(/\r?\n/);
+  const acIndex = lines.findIndex((line) => /^##\s+Acceptance Criteria/i.test(line.trim()));
+  if (acIndex === -1) {
+    return markdown;
+  }
+  return lines.slice(0, acIndex).join("\n").trimEnd();
+};
+
+const normalizeTask = (task: Task): Task => {
+  const title = task.title.trim();
+
+  const cleanedTitle = title
+    .replace(/^\s*(design|define|plan|research|explore)\s+/i, "Implement ")
+    .replace(/\bwireframes?\b/gi, "UI")
+    .replace(/\bdiagrams?\b/gi, "")
+    .replace(/\buser flows?\b/gi, "flow logic");
+
+  const baseDescription = stripAcceptanceCriteriaSection(task.description)
+    .replace(/\bdesign\b/gi, "implement")
+    .replace(/\bwireframe\b/gi, "UI")
+    .replace(/\bdiagram\b/gi, "")
+    .replace(/\buser flow\b/gi, "flow logic")
+    .trim();
+
+  const acceptanceCriteria = buildAcceptanceCriteriaFromTask(task)
+    .map((c) => `* [ ] ${c}`)
+    .join("\n");
+
+  return {
+    ...task,
+    title: cleanedTitle,
+    description: `${baseDescription}
+
+## Acceptance Criteria
+
+${acceptanceCriteria}`,
+  };
+};
+
 const validateGeneratedTaskQuality = (task: Task, index: number): string | null => {
-  const { title, description, labels } = task;
+  const { title, labels } = task;
   const prefix = `[task ${index + 1}]`;
 
   if (labels.length !== 1) {
@@ -109,35 +119,8 @@ const validateGeneratedTaskQuality = (task: Task, index: number): string | null 
     return `${prefix} Label must be exactly one of: frontend, backend, infra, tech-debt.`;
   }
 
-  if (description.length > MAX_GENERATED_DESCRIPTION_LENGTH) {
-    return `${prefix} Description is too long; keep sections tight (max ${MAX_GENERATED_DESCRIPTION_LENGTH} characters).`;
-  }
-
-  if (!description.includes("## Acceptance Criteria")) {
-    return `${prefix} Missing "## Acceptance Criteria" section.`;
-  }
-
-  const checklistPattern = /^\s*[*-]\s+\[[ x]\]\s+(.+)$/gim;
-  const matches = [...description.matchAll(checklistPattern)];
-  const substantive = matches.filter((m) => (m[1]?.trim().length ?? 0) >= 8);
-  if (substantive.length < 2) {
-    return `${prefix} Need at least two concrete, testable checklist lines under Acceptance Criteria (specific outcomes, not placeholders).`;
-  }
-
-  const trimmedTitle = title.trim();
-  if (trimmedTitle.length < 12) {
-    return `${prefix} Title is too vague; make it specific and actionable.`;
-  }
-
-  for (const pattern of BROAD_TITLE_PATTERNS) {
-    if (pattern.test(trimmedTitle)) {
-      return `${prefix} Title reads like an umbrella or multi-day effort; narrow scope to something finishable in part of a day.`;
-    }
-  }
-
-  const scopeBody = extractSectionBody(description, "Scope");
-  if (scopeBody !== null && scopeImpliesFrontend(scopeBody) && scopeImpliesBackend(scopeBody)) {
-    return `${prefix} Scope mixes client UI work and server/API or data work; split into separate tasks.`;
+  if (title.trim().length === 0) {
+    return `${prefix} Title must not be empty.`;
   }
 
   return null;
@@ -166,27 +149,120 @@ const refineTasksOrThrow = (tasks: Task[]): Task[] => {
   });
 };
 
+type RefineTasksOutcome =
+  | { readonly success: true; readonly tasks: Task[] }
+  | { readonly success: false; readonly validationErrorMessage: string };
+
+const tryRefineTasks = (tasks: Task[]): RefineTasksOutcome => {
+  try {
+    return { success: true, tasks: refineTasksOrThrow(tasks) };
+  } catch (e) {
+    const validationErrorMessage = e instanceof Error ? e.message : String(e);
+    return { success: false, validationErrorMessage };
+  }
+};
+
+const REPAIR_SYSTEM_SUFFIX = `
+
+---
+Repair pass: You must fix the tasks so they pass strict validation rules. Keep all tasks, but correct labels, scope, titles, and description content where needed. Respond with JSON only in the same shape: {"tasks":[{"title":"string","description":"string","labels":["string"]}]}. Do not change task meaning or structure unnecessarily.`;
+
+const parseCompletionContentToJson = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    throw new Error(`Failed to parse OpenAI JSON: ${cause}. Raw snippet: ${raw.slice(0, 200)}`);
+  }
+};
+
+const fetchJsonObjectCompletion = async (
+  client: OpenAI,
+  model: string,
+  messages: ChatCompletionMessageParam[],
+): Promise<unknown> => {
+  const completion = await client.chat.completions.create({
+    model,
+    response_format: { type: "json_object" },
+    messages,
+  });
+  const raw = completion.choices[0]?.message?.content;
+  if (raw === undefined || raw === null || raw.trim().length === 0) {
+    throw new Error("OpenAI returned an empty response");
+  }
+  return parseCompletionContentToJson(raw);
+};
+
 const SYSTEM_PROMPT = `You are a product manager assistant. Turn the user's request into GitHub issues that engineers can ship quickly.
 
 Output a single JSON object only (no markdown fences, no commentary):
 {"tasks":[{"title":"string","description":"string","labels":["string"]}]}
 
-Quality rules (follow closely):
+End-to-end completeness:
+- Together, the tasks must implement what the user asked for in a realistic, product-ready way—no skipping persistence, contracts, or cross-layer wiring where they matter.
+- Stay concrete; avoid toy breakdowns.
 
-- Each issue stands alone: another engineer can read only that issue and know what to do without reading the others.
-- Each issue delivers obvious user or system value—no filler or "misc" buckets.
-- Scope each issue so a competent developer could finish it in part of a day (not a week-long epic).
-- Acceptance criteria must be concrete and verifiable—no hand-wavy bullets.
-- Do not create umbrella issues (e.g. "implement the full product", "build the entire system", "do everything for feature X").
+Coverage enforcement:
+- Identify all major feature areas mentioned in the user request
+- Ensure each feature area is represented by at least one task
+- Do NOT omit any core part of the request
 
-Task count: use the minimum number of issues that still keeps work clear. Do not pad.
-- Small, focused asks: about 1–3 issues.
-- Medium scope: about 3–6 issues.
-- Large, multi-part asks: about 5–10 issues (stay closer to 5 unless separation truly needs more).
+Example:
 
-Frontend vs backend: never combine client UI work (pages, components, styling, client state) with server work (APIs, auth, database, business rules) in the same issue. If both are needed, split into separate issues. Only add both sides when the request truly needs them.
+User request: "onboarding with login and dashboard"
 
-Each task's description MUST be GitHub-flavored Markdown and MUST use this template (replace placeholders with concise, direct content—no essays):
+Must include tasks for:
+- onboarding
+- login/authentication
+- dashboard
+
+If any area is missing, the output is invalid.
+
+Layer-aware planning (include only what applies): client surface; application/service contracts and rules; durable state; integration between layers.
+
+Ordering and execution realism:
+- Prefer system-first: do not prioritize UI-only work before the data and server capabilities that surface needs exist—schedule backend or data tasks before or alongside dependent UI, not after by default.
+- Backend granularity: avoid one ticket that bundles unrelated server concerns; split when it clarifies work (e.g. distinct rules vs pipeline or cross-cutting hooks vs schema or persistence changes). Do not over-split for ceremony.
+- Integration: when UI depends on services, include explicit integration tasks (calling contracts, handling success and failure paths, reflecting results in client state or cache) as separate issues when that keeps each task single-purpose—without fragmenting needlessly.
+
+Coverage: if multiple layers matter, cover them all; do not emit only one layer when others are clearly required. Sequence so dependencies make sense.
+
+Decomposition: one primary responsibility per issue, independently readable and implementable in part of a day; verifiable acceptance criteria; no umbrella tickets; merge or split for meaningful units, not noise.
+
+Non-executable tasks are strictly forbidden.
+
+Do NOT generate tasks that:
+- involve only design, planning, or documentation
+- include words like "design", "define", "plan", "research", "explore"
+- produce artifacts like wireframes, diagrams, or UX flows without implementation
+
+If such a task would normally be generated, replace it with an equivalent executable task.
+
+Examples:
+- Instead of "Design onboarding flow" → generate "Implement onboarding UI flow"
+- Instead of "Create wireframes" → generate "Build onboarding UI components"
+
+Task count: adaptive minimum for coverage—do not pad. Typical bands: small 1–3, medium 3–6, large 5–10 (bias toward fewer unless separation truly helps).
+
+Layer separation (non-negotiable): never mix client presentation with server or data implementation in one issue. Name technologies only if the user did or clarity requires it.
+
+Description template (GitHub Markdown; concise; generic unless the user specified a domain). Omit "## Out of Scope" unless it prevents real duplication or confusion—do not use it to artificially fence related work.
+
+Acceptance Criteria — include the "## Acceptance Criteria" section in every description, with 2–4 task-specific outcomes:
+- Each outcome must be on its own line, starting with "- " (plain dash, no brackets)
+- Each outcome must be specific to THIS task's title and scope — not generic
+- Do NOT write generic lines like "works as described" or "handles edge cases" — describe the actual expected behavior
+- Keep outcomes short and verifiable
+
+Example for a backend task titled "Create Password Reset Token":
+## Acceptance Criteria
+- POST /auth/reset-token returns a token for a valid email
+- Expired or unknown email returns 404 with a clear message
+
+Example for a frontend task titled "Implement Login Page UI":
+## Acceptance Criteria
+- Login form renders email and password fields with submit button
+- Submitting with empty fields shows inline validation errors
 
 ## Context
 
@@ -198,64 +274,81 @@ Each task's description MUST be GitHub-flavored Markdown and MUST use this templ
 
 ## Scope
 
-<only what this issue covers—single layer (UI OR server/data OR infra OR refactor)>
+<single layer: client OR server/data OR infra OR refactor>
 
 ## Technical Notes
 
-<brief implementation hints only>
+<brief hints only>
 
 ## Acceptance Criteria
 
-* [ ] <specific, testable outcome>
-* [ ] <specific, testable outcome>
+- <specific, testable outcome derived from this task's title and scope>
+- <specific, testable outcome derived from this task's title and scope>
 
-## Out of Scope
-
-<what someone else will handle or follow-up work>
-
-Labels — exactly ONE label per task, spelled exactly:
+Labels — exactly ONE per task:
 
 - frontend — UI, components, pages, styling, client state
-- backend — APIs, authentication, database, business logic
+- backend — APIs, server-side logic, persistence, integration with data stores
 - infra — setup, configuration, CI/CD
 - tech-debt — refactoring or improvements without new product behavior
 
-Never put frontend and backend on the same task. Pick the single best-fitting label.`;
+Never frontend and backend on the same task.`;
+
+const buildInitialUserContent = (userRequest: string): string =>
+  `Break the following into GitHub issues as JSON. Cover required layers end-to-end; put foundational server and data work before or with dependent UI; add integration tasks where the client relies on services; keep each issue single-layer, sized for part of a day, and shippable—without pointless splitting.
+
+User request:
+
+${userRequest}`;
+
+const buildRepairUserContent = (tasks: Task[], validationErrorMessage: string): string => {
+  const tasksJson = JSON.stringify({ tasks }, null, 2);
+  return `The following tasks JSON failed strict validation. Fix the tasks so they pass validation. Do NOT change task meaning or structure unnecessarily—only fix labels (exactly one of frontend, backend, infra, tech-debt per task), scope/front-back separation, title issues, description content, and clarity of acceptance outcomes (plain text, not checklist syntax). Keep all tasks in the same order unless a correction requires otherwise.
+
+You must fix the tasks so they pass strict validation rules. Keep all tasks, but correct what the errors indicate.
+
+Validation errors:
+${validationErrorMessage}
+
+Original tasks JSON:
+${tasksJson}`;
+};
 
 export const generateTasks = async (
   client: OpenAI,
   userRequest: string,
   model: string = DEFAULT_CHAT_MODEL_ID,
 ): Promise<Task[]> => {
-  const completion = await client.chat.completions.create({
-    model,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: `Break the following into GitHub issues as JSON. Match scope to size: few issues for small asks, more only when the work truly splits.
+  const initialMessages: ChatCompletionMessageParam[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: buildInitialUserContent(userRequest) },
+  ];
 
-User request:
-
-${userRequest}`,
-      },
-    ],
-  });
-
-  const raw = completion.choices[0]?.message?.content;
-  if (raw === undefined || raw === null || raw.trim().length === 0) {
-    throw new Error("OpenAI returned an empty response");
+  const parsedInitial = await fetchJsonObjectCompletion(client, model, initialMessages);
+  const initialPayload = assertTasksShape(parsedInitial);
+  const normalizedTasks = initialPayload.tasks.map(normalizeTask);
+  const firstRefine = tryRefineTasks(normalizedTasks);
+  if (firstRefine.success) {
+    return firstRefine.tasks;
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    throw new Error(`Failed to parse OpenAI JSON: ${cause}. Raw snippet: ${raw.slice(0, 200)}`);
+  const repairMessages: ChatCompletionMessageParam[] = [
+    { role: "system", content: SYSTEM_PROMPT + REPAIR_SYSTEM_SUFFIX },
+    {
+      role: "user",
+      content: buildRepairUserContent(normalizedTasks, firstRefine.validationErrorMessage),
+    },
+  ];
+
+  const parsedRepair = await fetchJsonObjectCompletion(client, model, repairMessages);
+  const repairedPayload = assertTasksShape(parsedRepair);
+  const normalizedRepaired = repairedPayload.tasks.map(normalizeTask);
+  const secondRefine = tryRefineTasks(normalizedRepaired);
+  if (secondRefine.success) {
+    return secondRefine.tasks;
   }
 
-  const payload = assertTasksShape(parsed);
-  return refineTasksOrThrow(payload.tasks);
+  throw new Error(
+    `Task generation failed validation and repair did not pass. First pass: ${firstRefine.validationErrorMessage} Repair pass: ${secondRefine.validationErrorMessage}`,
+  );
 };

@@ -102,7 +102,7 @@ Pass `--` so Yarn forwards flags and the prompt to the script.
 ## What it does
 
 1. Reads your request from the CLI.
-2. Calls OpenAI (JSON mode) to produce a `tasks` array: `title`, `description` (Markdown with a fixed section template), and `labels`.
+2. Calls OpenAI (JSON mode) to produce a `tasks` array: `title`, `description` (Markdown: Context, Goal, Scope, Technical Notes, Acceptance Criteria; optional Out of Scope only when useful), and `labels`.
 3. Validates structure, then applies quality rules (single primary label, no FE/BE mix in scope, concrete acceptance criteria, sane scope/size).
 4. Creates one GitHub issue per task, or logs them when `--dry-run` is set.
 
@@ -111,7 +111,7 @@ Pass `--` so Yarn forwards flags and the prompt to the script.
 Each issue gets **exactly one** primary label (never `frontend` and `backend` together):
 
 - `frontend` — UI, components, pages, styling, client state
-- `backend` — APIs, authentication, database, business logic
+- `backend` — APIs, server-side logic, persistence, data stores
 - `infra` — setup, configuration, CI/CD
 - `tech-debt` — refactoring or improvements
 
