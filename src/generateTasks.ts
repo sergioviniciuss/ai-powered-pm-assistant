@@ -2,7 +2,30 @@ import type OpenAI from "openai";
 import type { Task } from "./types.js";
 import { assertTasksShape } from "./types.js";
 
-const DEFAULT_MODEL = "gpt-4o-mini";
+/** Default OpenAI chat model when --model is omitted. */
+export const DEFAULT_CHAT_MODEL_ID = "gpt-4o";
+
+export const resolveChatModelId = (raw: string | undefined): string => {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_CHAT_MODEL_ID;
+  }
+  const key = raw.trim().toLowerCase();
+  if (key === "fast") {
+    return "gpt-4o-mini";
+  }
+  if (key === "smart") {
+    return "gpt-4o";
+  }
+  if (key === "gpt-4o") {
+    return "gpt-4o";
+  }
+  if (key === "gpt-4o-mini") {
+    return "gpt-4o-mini";
+  }
+  throw new Error(
+    `Invalid --model value "${raw.trim()}". Use: fast (gpt-4o-mini), smart (gpt-4o), gpt-4o, or gpt-4o-mini.`,
+  );
+};
 
 /** Stricter than API max: keeps generated descriptions scannable. */
 const MAX_GENERATED_DESCRIPTION_LENGTH = 6000;
@@ -202,7 +225,7 @@ Never put frontend and backend on the same task. Pick the single best-fitting la
 export const generateTasks = async (
   client: OpenAI,
   userRequest: string,
-  model: string = DEFAULT_MODEL,
+  model: string = DEFAULT_CHAT_MODEL_ID,
 ): Promise<Task[]> => {
   const completion = await client.chat.completions.create({
     model,

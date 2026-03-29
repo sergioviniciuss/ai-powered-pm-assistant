@@ -3,7 +3,7 @@ import "dotenv/config";
 
 import { createIssues } from "./createIssues.js";
 import { createOctokit } from "./github.js";
-import { generateTasks } from "./generateTasks.js";
+import { generateTasks, resolveChatModelId } from "./generateTasks.js";
 import { createOpenAIClient } from "./openai.js";
 
 type ParsedCli = {
@@ -11,6 +11,7 @@ type ParsedCli = {
   dryRun: boolean;
   ownerFlag: string | undefined;
   repoFlag: string | undefined;
+  modelFlag: string | undefined;
 };
 
 const parseCliArgs = (argv: string[]): ParsedCli => {
@@ -18,6 +19,7 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
   let dryRun = false;
   let ownerFlag: string | undefined;
   let repoFlag: string | undefined;
+  let modelFlag: string | undefined;
   const positional: string[] = [];
 
   for (let i = 0; i < tokens.length; i += 1) {
@@ -43,6 +45,12 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
       continue;
     }
 
+    if (t.startsWith("--model=")) {
+      const v = t.slice("--model=".length).trim();
+      modelFlag = v.length > 0 ? v : undefined;
+      continue;
+    }
+
     if (t === "--owner") {
       const next = tokens[i + 1];
       if (next !== undefined && !next.startsWith("--")) {
@@ -63,11 +71,21 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
       continue;
     }
 
+    if (t === "--model") {
+      const next = tokens[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        const v = next.trim();
+        modelFlag = v.length > 0 ? v : undefined;
+        i += 1;
+      }
+      continue;
+    }
+
     positional.push(t);
   }
 
   const prompt = positional.join(" ").trim();
-  return { prompt, dryRun, ownerFlag, repoFlag };
+  return { prompt, dryRun, ownerFlag, repoFlag, modelFlag };
 };
 
 const requireEnv = (name: string): string => {
@@ -118,12 +136,16 @@ const logError = (message: string): void => {
 };
 
 const main = async (): Promise<void> => {
-  const { prompt, dryRun, ownerFlag, repoFlag } = parseCliArgs(process.argv);
+  const { prompt, dryRun, ownerFlag, repoFlag, modelFlag } = parseCliArgs(process.argv);
 
   if (prompt.length === 0) {
-    logError('Usage: pm-cli [--dry-run] [--owner=<name>] [--repo=<name>] "<natural language request>"');
+    logError(
+      'Usage: pm-cli [--dry-run] [--model=fast|smart|gpt-4o|gpt-4o-mini] [--owner=<name>] [--repo=<name>] "<natural language request>"',
+    );
     logError('Example: yarn pm "create onboarding system with auth and dashboard"');
     logError('Example: yarn pm --repo=my-repo --owner=my-org "create onboarding"');
+    logError("Example: yarn pm --model=fast \"smaller ask\"   # gpt-4o-mini");
+    logError("Example: yarn pm --model=smart \"complex ask\"   # gpt-4o");
     process.exitCode = 1;
     return;
   }
@@ -151,12 +173,21 @@ const main = async (): Promise<void> => {
 
   const openai = createOpenAIClient(openaiApiKey);
 
+  let chatModelId: string;
+  try {
+    chatModelId = resolveChatModelId(modelFlag);
+  } catch (e) {
+    logError(e instanceof Error ? e.message : String(e));
+    process.exitCode = 1;
+    return;
+  }
+
   console.log("Step 1/3: Reading request from CLI — done.");
   console.log("Step 2/3: Generating tasks with OpenAI...");
 
   let tasks;
   try {
-    tasks = await generateTasks(openai, prompt);
+    tasks = await generateTasks(openai, prompt, chatModelId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     logError(`Failed to generate tasks: ${msg}`);

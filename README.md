@@ -61,6 +61,12 @@ yarn pm --repo=my-repo --owner=my-org "create onboarding"
 
 You can mix flags and env: e.g. set `GITHUB_OWNER` in `.env` and pass only `--repo=other-repo`.
 
+**Model selection** (default: `gpt-4o`):
+
+- `--model=smart` → `gpt-4o`
+- `--model=fast` → `gpt-4o-mini`
+- `--model=gpt-4o` or `--model=gpt-4o-mini` → use that model ID directly
+
 Preview generated tasks **without** creating issues:
 
 ```bash
