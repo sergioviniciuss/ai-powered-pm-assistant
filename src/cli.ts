@@ -14,9 +14,10 @@ import {
 import type { EnvKeys } from "./envFile.js";
 import { createOctokit } from "./github.js";
 import { createJiraClient } from "./jira.js";
+import { createLlmJsonClient } from "./llm/index.js";
+import type { LlmProvider } from "./llm/index.js";
 import { generateClarifyingQuestions } from "./generateQuestions.js";
-import { generateTasks, resolveChatModelId } from "./generateTasks.js";
-import { createOpenAIClient } from "./openai.js";
+import { generateTasks, resolveMainModel, resolveClarificationModel } from "./generateTasks.js";
 
 type Target = "github" | "jira";
 
@@ -27,6 +28,7 @@ type ParsedRunCommand = {
   interactive: boolean;
   noInteractive: boolean;
   targetFlag: Target | undefined;
+  llmProviderFlag: LlmProvider | undefined;
   ownerFlag: string | undefined;
   repoFlag: string | undefined;
   modelFlag: string | undefined;
@@ -35,7 +37,9 @@ type ParsedRunCommand = {
 type ParsedInitCommand = {
   command: "init";
   targetFlag: Target | undefined;
+  llmProviderFlag: LlmProvider | undefined;
   openaiApiKey: string | undefined;
+  anthropicApiKey: string | undefined;
   githubToken: string | undefined;
   ownerFlag: string | undefined;
   repoFlag: string | undefined;
@@ -75,9 +79,18 @@ const parseTargetValue = (raw: string | undefined): Target | undefined => {
   throw new Error(`Invalid --target value "${raw}". Use: github or jira.`);
 };
 
+const parseLlmProviderValue = (raw: string | undefined): LlmProvider | undefined => {
+  if (raw === undefined) return undefined;
+  const v = raw.toLowerCase();
+  if (v === "openai" || v === "anthropic") return v;
+  throw new Error(`Invalid --llm-provider value "${raw}". Use: openai or anthropic.`);
+};
+
 const parseInitArgs = (tokens: string[]): ParsedInitCommand => {
   let targetFlag: string | undefined;
+  let llmProviderFlag: string | undefined;
   let openaiApiKey: string | undefined;
+  let anthropicApiKey: string | undefined;
   let githubToken: string | undefined;
   let ownerFlag: string | undefined;
   let repoFlag: string | undefined;
@@ -94,7 +107,9 @@ const parseInitArgs = (tokens: string[]): ParsedInitCommand => {
 
     for (const [prefix, setter] of [
       ["--target", (v: string | undefined) => { targetFlag = v; }],
+      ["--llm-provider", (v: string | undefined) => { llmProviderFlag = v; }],
       ["--openai-api-key", (v: string | undefined) => { openaiApiKey = v; }],
+      ["--anthropic-api-key", (v: string | undefined) => { anthropicApiKey = v; }],
       ["--github-token", (v: string | undefined) => { githubToken = v; }],
       ["--github-owner", (v: string | undefined) => { ownerFlag = v; }],
       ["--owner", (v: string | undefined) => { ownerFlag = v; }],
@@ -117,7 +132,9 @@ const parseInitArgs = (tokens: string[]): ParsedInitCommand => {
   return {
     command: "init",
     targetFlag: parseTargetValue(targetFlag),
+    llmProviderFlag: parseLlmProviderValue(llmProviderFlag),
     openaiApiKey,
+    anthropicApiKey,
     githubToken,
     ownerFlag,
     repoFlag,
@@ -139,6 +156,7 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
   let interactive = false;
   let noInteractive = false;
   let rawTarget: string | undefined;
+  let rawLlmProvider: string | undefined;
   let ownerFlag: string | undefined;
   let repoFlag: string | undefined;
   let modelFlag: string | undefined;
@@ -168,6 +186,7 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
     let matched = false;
     for (const [prefix, setter] of [
       ["--target", (v: string | undefined) => { rawTarget = v; }],
+      ["--llm-provider", (v: string | undefined) => { rawLlmProvider = v; }],
       ["--owner", (v: string | undefined) => { ownerFlag = v; }],
       ["--repo", (v: string | undefined) => { repoFlag = v; }],
       ["--model", (v: string | undefined) => { modelFlag = v; }],
@@ -193,6 +212,7 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
     interactive,
     noInteractive,
     targetFlag: parseTargetValue(rawTarget),
+    llmProviderFlag: parseLlmProviderValue(rawLlmProvider),
     ownerFlag,
     repoFlag,
     modelFlag,
@@ -262,8 +282,12 @@ const shouldAskClarifyingQuestions = (input: string): boolean => {
 
 type InitPrompt = { key: keyof EnvKeys; label: string };
 
-const COMMON_PROMPTS: InitPrompt[] = [
+const OPENAI_PROMPTS: InitPrompt[] = [
   { key: "OPENAI_API_KEY", label: "OpenAI API key" },
+];
+
+const ANTHROPIC_PROMPTS: InitPrompt[] = [
+  { key: "ANTHROPIC_API_KEY", label: "Anthropic (Claude) API key" },
 ];
 
 const GITHUB_PROMPTS: InitPrompt[] = [
@@ -279,8 +303,8 @@ const JIRA_PROMPTS: InitPrompt[] = [
   { key: "JIRA_PROJECT_KEY", label: "Jira project key (e.g. PROJ)" },
 ];
 
-const getInitPrompts = (target: Target): InitPrompt[] => [
-  ...COMMON_PROMPTS,
+const getInitPrompts = (target: Target, llmProvider: LlmProvider): InitPrompt[] => [
+  ...(llmProvider === "anthropic" ? ANTHROPIC_PROMPTS : OPENAI_PROMPTS),
   ...(target === "jira" ? JIRA_PROMPTS : GITHUB_PROMPTS),
 ];
 
@@ -290,6 +314,7 @@ const runInit = async (parsed: ParsedInitCommand): Promise<void> => {
 
   const flagValues: Partial<EnvKeys> = {};
   if (parsed.openaiApiKey !== undefined) flagValues.OPENAI_API_KEY = parsed.openaiApiKey;
+  if (parsed.anthropicApiKey !== undefined) flagValues.ANTHROPIC_API_KEY = parsed.anthropicApiKey;
   if (parsed.githubToken !== undefined) flagValues.GITHUB_TOKEN = parsed.githubToken;
   if (parsed.ownerFlag !== undefined) flagValues.GITHUB_OWNER = parsed.ownerFlag;
   if (parsed.repoFlag !== undefined) flagValues.GITHUB_REPO = parsed.repoFlag;
@@ -298,17 +323,18 @@ const runInit = async (parsed: ParsedInitCommand): Promise<void> => {
   if (parsed.jiraApiToken !== undefined) flagValues.JIRA_API_TOKEN = parsed.jiraApiToken;
   if (parsed.jiraProjectKey !== undefined) flagValues.JIRA_PROJECT_KEY = parsed.jiraProjectKey;
 
-  let target: Target | undefined = parsed.targetFlag;
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
 
+  console.log("pm-assistant init — configure your environment.\n");
+
+  let target: Target | undefined = parsed.targetFlag;
   if (target === undefined) {
     const currentTarget = existingValues.TARGET;
     const defaultHint = currentTarget ? ` (current: ${currentTarget})` : " (default: github)";
-    console.log("pm-assistant init — configure your environment.\n");
-    const answer = await rl.question(`Target [github / jira]${defaultHint}: `);
+    const answer = await rl.question(`Issue tracker [github / jira]${defaultHint}: `);
     const trimmed = answer.trim().toLowerCase();
     if (trimmed === "jira") {
       target = "jira";
@@ -320,13 +346,30 @@ const runInit = async (parsed: ParsedInitCommand): Promise<void> => {
       process.exitCode = 1;
       return;
     }
-  } else {
-    console.log("pm-assistant init — configure your environment.\n");
+  }
+
+  let llmProvider: LlmProvider | undefined = parsed.llmProviderFlag;
+  if (llmProvider === undefined) {
+    const currentProvider = existingValues.LLM_PROVIDER;
+    const defaultHint = currentProvider ? ` (current: ${currentProvider})` : " (default: openai)";
+    const answer = await rl.question(`LLM provider [openai / anthropic]${defaultHint}: `);
+    const trimmed = answer.trim().toLowerCase();
+    if (trimmed === "anthropic") {
+      llmProvider = "anthropic";
+    } else if (trimmed === "openai" || trimmed === "") {
+      llmProvider = (currentProvider as LlmProvider) ?? "openai";
+    } else {
+      rl.close();
+      logError(`Invalid LLM provider "${answer.trim()}". Use: openai or anthropic.`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   flagValues.TARGET = target;
+  flagValues.LLM_PROVIDER = llmProvider;
 
-  const prompts = getInitPrompts(target);
+  const prompts = getInitPrompts(target, llmProvider);
   const allProvidedByFlags = prompts.every(({ key }) => key in flagValues);
   const updates: Partial<EnvKeys> = { ...flagValues };
 
@@ -400,27 +443,40 @@ const resolveJiraTarget = (): ResolvedJiraTarget => {
   return { host, email, apiToken, projectKey };
 };
 
+const resolveLlmProvider = (flag: LlmProvider | undefined): LlmProvider => {
+  if (flag !== undefined) return flag;
+  const env = envTrim("LLM_PROVIDER")?.toLowerCase();
+  if (env === "anthropic") return "anthropic";
+  return "openai";
+};
+
+const resolveLlmApiKey = (provider: LlmProvider): string => {
+  const keyName = provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+  return requireEnv(keyName);
+};
+
 const runMain = async (parsed: ParsedRunCommand): Promise<void> => {
-  const { prompt, dryRun, interactive, noInteractive, targetFlag, ownerFlag, repoFlag, modelFlag } = parsed;
+  const { prompt, dryRun, interactive, noInteractive, targetFlag, llmProviderFlag, ownerFlag, repoFlag, modelFlag } = parsed;
 
   if (prompt.length === 0) {
     logError(
-      'Usage: pm-assistant [--dry-run] [--target=github|jira] [--model=fast|smart] [--owner=<name>] [--repo=<name>] "<request>"',
+      'Usage: pm-assistant [--dry-run] [--target=github|jira] [--llm-provider=openai|anthropic] [--model=fast|smart] "<request>"',
     );
-    logError("       pm-assistant init [--target=github|jira] [--openai-api-key=...] [--github-token=...] [--owner=...] [--repo=...]");
+    logError("       pm-assistant init [--target=...] [--llm-provider=...] [--openai-api-key=...] [--anthropic-api-key=...]");
     logError("");
     logError('Example: pm-assistant "create onboarding system with auth and dashboard"');
-    logError('Example: pm-assistant --target=jira "create onboarding system"');
+    logError('Example: pm-assistant --llm-provider=anthropic "create onboarding system"');
     logError("Example: pm-assistant init");
     process.exitCode = 1;
     return;
   }
 
   const target = resolveTarget(targetFlag);
+  const llmProvider = resolveLlmProvider(llmProviderFlag);
 
-  let openaiApiKey: string;
+  let llmApiKey: string;
   try {
-    openaiApiKey = requireEnv("OPENAI_API_KEY");
+    llmApiKey = resolveLlmApiKey(llmProvider);
   } catch (e) {
     logError(e instanceof Error ? e.message : String(e));
     logError('Tip: run "pm-assistant init" to configure your environment.');
@@ -444,18 +500,20 @@ const runMain = async (parsed: ParsedRunCommand): Promise<void> => {
     }
   }
 
-  const openai = createOpenAIClient(openaiApiKey);
+  const llmClient = createLlmJsonClient(llmProvider, llmApiKey);
 
   let chatModelId: string;
   try {
-    chatModelId = resolveChatModelId(modelFlag);
+    chatModelId = resolveMainModel(llmProvider, modelFlag);
   } catch (e) {
     logError(e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
     return;
   }
 
-  console.log(`Step 1/3: Reading request from CLI — done. (target: ${target})`);
+  const clarificationModelId = resolveClarificationModel(llmProvider);
+
+  console.log(`Step 1/3: Reading request from CLI — done. (target: ${target}, llm: ${llmProvider})`);
 
   let enrichedPrompt = prompt;
 
@@ -466,7 +524,7 @@ const runMain = async (parsed: ParsedRunCommand): Promise<void> => {
     console.log("Step 1.5/3: Clarifying your request...");
 
     try {
-      const questions = await generateClarifyingQuestions(openai, prompt);
+      const questions = await generateClarifyingQuestions(llmClient, clarificationModelId, prompt);
 
       const rl = readline.createInterface({
         input: process.stdin,
@@ -497,11 +555,11 @@ const runMain = async (parsed: ParsedRunCommand): Promise<void> => {
     }
   }
 
-  console.log("Step 2/3: Generating tasks with OpenAI...");
+  console.log("Step 2/3: Generating tasks...");
 
   let tasks;
   try {
-    tasks = await generateTasks(openai, enrichedPrompt, chatModelId);
+    tasks = await generateTasks(llmClient, enrichedPrompt, chatModelId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     logError(`Failed to generate tasks: ${msg}`);

@@ -5,7 +5,9 @@ const ENV_PATH = join(process.cwd(), ".env");
 
 const MANAGED_KEYS = [
   "TARGET",
+  "LLM_PROVIDER",
   "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
   "GITHUB_TOKEN",
   "GITHUB_OWNER",
   "GITHUB_REPO",

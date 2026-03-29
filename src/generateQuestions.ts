@@ -1,16 +1,6 @@
-import type OpenAI from "openai";
+import type { LlmJsonClient } from "./llm/index.js";
 
-export const generateClarifyingQuestions = async (
-  client: OpenAI,
-  input: string,
-): Promise<string[]> => {
-  const res = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content: `You are a senior product manager.
+const SYSTEM_PROMPT = `You are a senior product manager.
 
 Your job is to identify missing or ambiguous details in a feature request.
 
@@ -22,20 +12,17 @@ Rules:
 - Avoid trivial questions
 - Prefer questions that affect UX, data flow, or behavior
 - Keep questions short and clear
-- Output JSON: {"questions": ["...", "..."]}`,
-      },
-      {
-        role: "user",
-        content: input,
-      },
-    ],
-  });
+- Output JSON: {"questions": ["...", "..."]}`;
 
-  const raw = res.choices[0]?.message?.content;
-  if (!raw) {
-    throw new Error("Failed to generate clarification questions");
-  }
+export const generateClarifyingQuestions = async (
+  client: LlmJsonClient,
+  model: string,
+  input: string,
+): Promise<string[]> => {
+  const parsed = (await client.completeJsonObject(model, [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: input },
+  ])) as { questions?: string[] };
 
-  const parsed = JSON.parse(raw) as { questions?: string[] };
   return parsed.questions ?? [];
 };
