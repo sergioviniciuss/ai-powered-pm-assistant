@@ -97,17 +97,17 @@ Pass `--` so Yarn forwards flags and the prompt to the script.
 
 1. Reads your request from the CLI.
 2. Calls OpenAI (JSON mode) to produce a `tasks` array: `title`, `description` (Markdown with a fixed section template), and `labels`.
-3. Validates each task (non-empty strings, sensible lengths, label array).
+3. Validates structure, then applies quality rules (single primary label, no FE/BE mix in scope, concrete acceptance criteria, sane scope/size).
 4. Creates one GitHub issue per task, or logs them when `--dry-run` is set.
 
 ### Labels
 
-The model is instructed to use these labels when content matches:
+Each issue gets **exactly one** primary label (never `frontend` and `backend` together):
 
-- `frontend` — UI, components, styling
-- `backend` — API, database, server
-- `infra` — config, CI/CD, setup
-- `tech-debt` — refactoring
+- `frontend` — UI, components, pages, styling, client state
+- `backend` — APIs, authentication, database, business logic
+- `infra` — setup, configuration, CI/CD
+- `tech-debt` — refactoring or improvements
 
 Ensure these labels exist in your GitHub repository, or the Issues API may reject unknown labels (depending on repo settings).
 
