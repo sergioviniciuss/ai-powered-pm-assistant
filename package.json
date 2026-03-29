@@ -4,7 +4,8 @@
   "description": "PM assistant CLI: natural language to GitHub issues via OpenAI",
   "type": "module",
   "bin": {
-    "pm-cli": "dist/cli.js"
+    "pm-cli": "dist/cli.js",
+    "pm-assistant": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",

@@ -18,17 +18,27 @@ A small **PM assistant** CLI: you describe work in natural language, OpenAI turn
    yarn install
    ```
 
-2. Copy environment template and fill in values:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-3. Build TypeScript:
+2. Build TypeScript:
 
    ```bash
    yarn build
    ```
+
+3. Configure your environment interactively:
+
+   ```bash
+   yarn pm init
+   ```
+
+   This prompts for your OpenAI API key, GitHub token, owner, and repo, then writes a `.env` file in the current directory. If a `.env` already exists, only the values you provide are updated — other entries are preserved.
+
+   You can also pass everything as flags to skip prompts:
+
+   ```bash
+   yarn pm init --openai-api-key=sk-... --github-token=ghp_... --owner=acme --repo=app
+   ```
+
+   Or provide some flags and answer prompts for the rest (hybrid mode).
 
 ## Environment variables
 
@@ -75,19 +85,20 @@ yarn pm --dry-run "add password reset flow and email templates"
 
 With `--dry-run`, if both owner and repo are available (from flags or env), the log includes the target repository for context.
 
-### Global CLI (`pm-cli`)
+### Global CLI (`pm-assistant` / `pm-cli`)
 
-After building, link the package so the `pm-cli` binary is on your `PATH`:
+After building, link the package so the `pm-assistant` binary is on your `PATH`:
 
 ```bash
 yarn build
 yarn link
-pm-cli "your feature description here"
-pm-cli --owner=acme --repo=product "your feature description here"
-pm-cli --dry-run "your feature description here"
+pm-assistant init
+pm-assistant "your feature description here"
+pm-assistant --owner=acme --repo=product "your feature description here"
+pm-assistant --dry-run "your feature description here"
 ```
 
-Alternatively use `npm link` from the project root.
+The legacy `pm-cli` binary also works. Alternatively use `npm link` from the project root.
 
 ### Development (no build)
 
@@ -119,8 +130,10 @@ Ensure these labels exist in your GitHub repository, or the Issues API may rejec
 
 ## Project layout
 
-- `src/cli.ts` — Entrypoint, env checks, orchestration
+- `src/cli.ts` — Entrypoint, subcommand routing (`init` / run), env checks, orchestration
+- `src/envFile.ts` — `.env` file read/merge/write helpers for `init`
 - `src/generateTasks.ts` — OpenAI prompt and parsing
+- `src/generateQuestions.ts` — Clarifying questions via OpenAI
 - `src/createIssues.ts` — Octokit issue creation / dry-run logging
 - `src/github.ts` — Octokit client factory
 - `src/openai.ts` — OpenAI client factory
