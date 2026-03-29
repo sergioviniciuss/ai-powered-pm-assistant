@@ -1,0 +1,27 @@
+{
+  "name": "pm-cli",
+  "version": "1.0.0",
+  "description": "PM assistant CLI: natural language to GitHub issues via OpenAI",
+  "type": "module",
+  "bin": {
+    "pm-cli": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "pm": "node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "octokit": "^4.0.2",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.2"
+  }
+}
