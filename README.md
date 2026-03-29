@@ -1,4 +1,4 @@
-# pm-cli
+# pm-assistant
 
 A small **PM assistant** CLI: you describe work in natural language, OpenAI turns it into structured tasks, and the tool creates **GitHub Issues** (or previews them with `--dry-run`).
 
@@ -14,7 +14,7 @@ A small **PM assistant** CLI: you describe work in natural language, OpenAI turn
 1. Clone or copy this project and install dependencies:
 
    ```bash
-   cd pm-cli
+   cd pm-assistant
    yarn install
    ```
 
@@ -27,7 +27,7 @@ A small **PM assistant** CLI: you describe work in natural language, OpenAI turn
 3. Configure your environment interactively:
 
    ```bash
-   yarn pm init
+   yarn pm-assistant init
    ```
 
    This prompts for your OpenAI API key, GitHub token, owner, and repo, then writes a `.env` file in the current directory. If a `.env` already exists, only the values you provide are updated — other entries are preserved.
@@ -35,7 +35,7 @@ A small **PM assistant** CLI: you describe work in natural language, OpenAI turn
    You can also pass everything as flags to skip prompts:
 
    ```bash
-   yarn pm init --openai-api-key=sk-... --github-token=ghp_... --owner=acme --repo=app
+   yarn pm-assistant init --openai-api-key=sk-... --github-token=ghp_... --owner=acme --repo=app
    ```
 
    Or provide some flags and answer prompts for the rest (hybrid mode).
@@ -55,18 +55,18 @@ With `--dry-run`, only `OPENAI_API_KEY` is required.
 
 ## How to run
 
-After `yarn build`, use the `pm` script:
+After `yarn build`, use the `pm-assistant` script:
 
 ```bash
-yarn pm "create onboarding system with auth and dashboard"
+yarn pm-assistant "create onboarding system with auth and dashboard"
 ```
 
 Use a specific repository (overrides `GITHUB_OWNER` / `GITHUB_REPO` for this run):
 
 ```bash
-yarn pm --owner=my-org --repo=my-repo "create onboarding"
+yarn pm-assistant --owner=my-org --repo=my-repo "create onboarding"
 # or
-yarn pm --repo=my-repo --owner=my-org "create onboarding"
+yarn pm-assistant --repo=my-repo --owner=my-org "create onboarding"
 ```
 
 You can mix flags and env: e.g. set `GITHUB_OWNER` in `.env` and pass only `--repo=other-repo`.
@@ -80,12 +80,12 @@ You can mix flags and env: e.g. set `GITHUB_OWNER` in `.env` and pass only `--re
 Preview generated tasks **without** creating issues:
 
 ```bash
-yarn pm --dry-run "add password reset flow and email templates"
+yarn pm-assistant --dry-run "add password reset flow and email templates"
 ```
 
 With `--dry-run`, if both owner and repo are available (from flags or env), the log includes the target repository for context.
 
-### Global CLI (`pm-assistant` / `pm-cli`)
+### Global CLI (`pm-assistant`)
 
 After building, link the package so the `pm-assistant` binary is on your `PATH`:
 
@@ -98,7 +98,7 @@ pm-assistant --owner=acme --repo=product "your feature description here"
 pm-assistant --dry-run "your feature description here"
 ```
 
-The legacy `pm-cli` binary also works. Alternatively use `npm link` from the project root.
+Alternatively use `npm link` from the project root.
 
 ### Development (no build)
 
