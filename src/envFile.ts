@@ -4,10 +4,15 @@ import { join } from "node:path";
 const ENV_PATH = join(process.cwd(), ".env");
 
 const MANAGED_KEYS = [
+  "TARGET",
   "OPENAI_API_KEY",
   "GITHUB_TOKEN",
   "GITHUB_OWNER",
   "GITHUB_REPO",
+  "JIRA_HOST",
+  "JIRA_EMAIL",
+  "JIRA_API_TOKEN",
+  "JIRA_PROJECT_KEY",
 ] as const;
 
 export type EnvKeys = Record<(typeof MANAGED_KEYS)[number], string>;

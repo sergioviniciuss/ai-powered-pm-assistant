@@ -1,7 +1,7 @@
 {
   "name": "pm-assistant",
   "version": "1.0.0",
-  "description": "PM assistant CLI: natural language to GitHub issues via OpenAI",
+  "description": "PM assistant CLI: natural language to GitHub issues or Jira tickets via OpenAI",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -25,6 +25,7 @@
   "keywords": [
     "cli",
     "github",
+    "jira",
     "issues",
     "openai",
     "project-management",
