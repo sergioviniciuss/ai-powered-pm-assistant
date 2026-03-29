@@ -1,32 +1,39 @@
-import type OpenAI from "openai";
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type { LlmProvider, LlmJsonClient, ChatMessage } from "./llm/index.js";
 import type { Task } from "./types.js";
 import { assertTasksShape } from "./types.js";
 
-/** Default OpenAI chat model when --model is omitted. */
-export const DEFAULT_CHAT_MODEL_ID = "gpt-4o";
+const OPENAI_MODELS = { fast: "gpt-4o-mini", smart: "gpt-4o", default: "gpt-4o" } as const;
+const ANTHROPIC_MODELS = {
+  fast: "claude-haiku-4-20250414",
+  smart: "claude-sonnet-4-20250514",
+  default: "claude-sonnet-4-20250514",
+} as const;
 
-export const resolveChatModelId = (raw: string | undefined): string => {
+export const resolveMainModel = (provider: LlmProvider, raw: string | undefined): string => {
+  const models = provider === "anthropic" ? ANTHROPIC_MODELS : OPENAI_MODELS;
   if (raw === undefined || raw.trim() === "") {
-    return DEFAULT_CHAT_MODEL_ID;
+    return models.default;
   }
   const key = raw.trim().toLowerCase();
-  if (key === "fast") {
-    return "gpt-4o-mini";
+  if (key === "fast") return models.fast;
+  if (key === "smart") return models.smart;
+
+  if (provider === "openai") {
+    if (key === "gpt-4o" || key === "gpt-4o-mini") return key;
   }
-  if (key === "smart") {
-    return "gpt-4o";
+  if (provider === "anthropic") {
+    if (key.startsWith("claude-")) return key;
   }
-  if (key === "gpt-4o") {
-    return "gpt-4o";
-  }
-  if (key === "gpt-4o-mini") {
-    return "gpt-4o-mini";
-  }
-  throw new Error(
-    `Invalid --model value "${raw.trim()}". Use: fast (gpt-4o-mini), smart (gpt-4o), gpt-4o, or gpt-4o-mini.`,
-  );
+
+  const examples =
+    provider === "anthropic"
+      ? "fast (Haiku), smart (Sonnet), or a claude-* model ID"
+      : "fast (gpt-4o-mini), smart (gpt-4o), gpt-4o, or gpt-4o-mini";
+  throw new Error(`Invalid --model value "${raw.trim()}". Use: ${examples}.`);
 };
+
+export const resolveClarificationModel = (provider: LlmProvider): string =>
+  provider === "anthropic" ? ANTHROPIC_MODELS.fast : OPENAI_MODELS.fast;
 
 const PRIMARY_LABELS = ["frontend", "backend", "infra", "tech-debt"] as const;
 type PrimaryLabel = (typeof PRIMARY_LABELS)[number];
@@ -221,15 +228,15 @@ Output JSON: {"tasks":[{"title":"string","description":"string","labels":["strin
 Do NOT modify task titles, labels, or the non-AC parts of descriptions. Only rewrite the ## Acceptance Criteria section.`;
 
 const repairAcceptanceCriteria = async (
-  client: OpenAI,
+  client: LlmJsonClient,
   model: string,
   tasks: Task[],
 ): Promise<Task[]> => {
-  const messages: ChatCompletionMessageParam[] = [
+  const messages: ChatMessage[] = [
     { role: "system", content: AC_REPAIR_SYSTEM_PROMPT },
     { role: "user", content: JSON.stringify({ tasks }, null, 2) },
   ];
-  const parsed = await fetchJsonObjectCompletion(client, model, messages);
+  const parsed = await client.completeJsonObject(model, messages);
   const payload = assertTasksShape(parsed);
   return payload.tasks;
 };
@@ -254,31 +261,6 @@ const REPAIR_SYSTEM_SUFFIX = `
 ---
 Repair pass: You must fix the tasks so they pass strict validation rules. Keep all tasks, but correct labels, scope, titles, and description content where needed. Respond with JSON only in the same shape: {"tasks":[{"title":"string","description":"string","labels":["string"]}]}. Do not change task meaning or structure unnecessarily.`;
 
-const parseCompletionContentToJson = (raw: string): unknown => {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    throw new Error(`Failed to parse OpenAI JSON: ${cause}. Raw snippet: ${raw.slice(0, 200)}`);
-  }
-};
-
-const fetchJsonObjectCompletion = async (
-  client: OpenAI,
-  model: string,
-  messages: ChatCompletionMessageParam[],
-): Promise<unknown> => {
-  const completion = await client.chat.completions.create({
-    model,
-    response_format: { type: "json_object" },
-    messages,
-  });
-  const raw = completion.choices[0]?.message?.content;
-  if (raw === undefined || raw === null || raw.trim().length === 0) {
-    throw new Error("OpenAI returned an empty response");
-  }
-  return parseCompletionContentToJson(raw);
-};
 
 const SYSTEM_PROMPT = `You are a product manager assistant. Turn the user's request into GitHub issues that engineers can ship quickly.
 
@@ -426,16 +408,16 @@ ${tasksJson}`;
 };
 
 export const generateTasks = async (
-  client: OpenAI,
+  client: LlmJsonClient,
   userRequest: string,
-  model: string = DEFAULT_CHAT_MODEL_ID,
+  model: string,
 ): Promise<Task[]> => {
-  const initialMessages: ChatCompletionMessageParam[] = [
+  const initialMessages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: buildInitialUserContent(userRequest) },
   ];
 
-  const parsedInitial = await fetchJsonObjectCompletion(client, model, initialMessages);
+  const parsedInitial = await client.completeJsonObject(model, initialMessages);
   const initialPayload = assertTasksShape(parsedInitial);
   const normalizedTasks = initialPayload.tasks.map(normalizeTask);
   const firstRefine = tryRefineTasks(normalizedTasks);
@@ -443,7 +425,7 @@ export const generateTasks = async (
     return firstRefine.tasks;
   }
 
-  const repairMessages: ChatCompletionMessageParam[] = [
+  const repairMessages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT + REPAIR_SYSTEM_SUFFIX },
     {
       role: "user",
@@ -451,7 +433,7 @@ export const generateTasks = async (
     },
   ];
 
-  const parsedRepair = await fetchJsonObjectCompletion(client, model, repairMessages);
+  const parsedRepair = await client.completeJsonObject(model, repairMessages);
   const repairedPayload = assertTasksShape(parsedRepair);
   const normalizedRepaired = repairedPayload.tasks.map(normalizeTask);
   const secondRefine = tryRefineTasks(normalizedRepaired);

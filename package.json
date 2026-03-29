@@ -1,7 +1,7 @@
 {
   "name": "pm-assistant",
   "version": "1.0.0",
-  "description": "PM assistant CLI: natural language to GitHub issues via OpenAI",
+  "description": "PM assistant CLI: natural language to GitHub issues or Jira tickets via OpenAI or Anthropic Claude",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -25,8 +25,11 @@
   "keywords": [
     "cli",
     "github",
+    "jira",
     "issues",
     "openai",
+    "anthropic",
+    "claude",
     "project-management",
     "pm",
     "tasks"
@@ -35,6 +38,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
     "dotenv": "^16.4.7",
     "octokit": "^4.0.2",
     "openai": "^4.77.0"

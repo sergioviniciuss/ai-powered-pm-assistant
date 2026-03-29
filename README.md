@@ -1,13 +1,14 @@
 # pm-assistant
 
-A small **PM assistant** CLI: you describe work in natural language, OpenAI turns it into structured tasks, and the tool creates **GitHub Issues** (or previews them with `--dry-run`).
+A small **PM assistant** CLI: you describe work in natural language, an LLM (**OpenAI** or **Anthropic Claude**) turns it into structured tasks, and the tool creates **GitHub Issues** or **Jira tickets** (or previews them with `--dry-run`).
 
 ## Requirements
 
 - **Node.js 22 or later** (install the [current Active LTS](https://nodejs.org/en/about/releases/) — **Node.js 24** as of early 2026)
 - [Yarn](https://yarnpkg.com/) (Classic v1 is fine)
-- OpenAI API key
-- GitHub personal access token with `repo` scope (only when not using `--dry-run`)
+- **OpenAI** API key _or_ **Anthropic** API key (one required)
+- **GitHub**: personal access token with `repo` scope (only when not using `--dry-run`)
+- **Jira Cloud**: API token from [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) (only when not using `--dry-run`)
 
 ## Setup
 
@@ -30,12 +31,18 @@ A small **PM assistant** CLI: you describe work in natural language, OpenAI turn
    yarn pm-assistant init
    ```
 
-   This prompts for your OpenAI API key, GitHub token, owner, and repo, then writes a `.env` file in the current directory. If a `.env` already exists, only the values you provide are updated — other entries are preserved.
+   This asks which issue tracker (`github` or `jira`) and which LLM provider (`openai` or `anthropic`) you want, then prompts for the relevant credentials and writes a `.env` file in the current directory. If a `.env` already exists, only the values you provide are updated — other entries are preserved.
 
-   You can also pass everything as flags to skip prompts:
+   **OpenAI + GitHub (default):**
 
    ```bash
-   yarn pm-assistant init --openai-api-key=sk-... --github-token=ghp_... --owner=acme --repo=app
+   yarn pm-assistant init --target=github --llm-provider=openai --openai-api-key=sk-... --github-token=ghp_... --owner=acme --repo=app
+   ```
+
+   **Anthropic + Jira:**
+
+   ```bash
+   yarn pm-assistant init --target=jira --llm-provider=anthropic --anthropic-api-key=sk-ant-... --jira-host=your-domain.atlassian.net --jira-email=you@example.com --jira-api-token=... --jira-project-key=PROJ
    ```
 
    Or provide some flags and answer prompts for the rest (hybrid mode).
@@ -44,14 +51,24 @@ A small **PM assistant** CLI: you describe work in natural language, OpenAI turn
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Always | OpenAI API key |
-| `GITHUB_TOKEN` | Unless `--dry-run` | GitHub PAT with access to the repo |
-| `GITHUB_OWNER` | Unless `--dry-run`* | Default owner when `--owner` is not passed |
-| `GITHUB_REPO` | Unless `--dry-run`* | Default repo name when `--repo` is not passed |
+| `TARGET` | No (default: `github`) | Issue tracker: `github` or `jira` |
+| `LLM_PROVIDER` | No (default: `openai`) | LLM backend: `openai` or `anthropic` |
+| **LLM keys** | | |
+| `OPENAI_API_KEY` | When provider=openai | OpenAI API key |
+| `ANTHROPIC_API_KEY` | When provider=anthropic | Anthropic API key |
+| **GitHub** | | |
+| `GITHUB_TOKEN` | When target=github, unless `--dry-run` | GitHub PAT with access to the repo |
+| `GITHUB_OWNER` | When target=github, unless `--dry-run`* | Default owner when `--owner` is not passed |
+| `GITHUB_REPO` | When target=github, unless `--dry-run`* | Default repo name when `--repo` is not passed |
+| **Jira Cloud** | | |
+| `JIRA_HOST` | When target=jira, unless `--dry-run` | e.g. `your-domain.atlassian.net` |
+| `JIRA_EMAIL` | When target=jira, unless `--dry-run` | Atlassian account email |
+| `JIRA_API_TOKEN` | When target=jira, unless `--dry-run` | API token from [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| `JIRA_PROJECT_KEY` | When target=jira, unless `--dry-run` | e.g. `PROJ` |
 
 \*For each of owner and repo, you may pass **`--owner=<name>`** / **`--repo=<name>`** on the command line instead of (or to override) the matching env var. Both values must be resolved before creating issues: if either is missing from flags and env, the CLI exits with a clear error.
 
-With `--dry-run`, only `OPENAI_API_KEY` is required.
+With `--dry-run`, only your LLM provider's API key is required.
 
 ## How to run
 
@@ -61,21 +78,40 @@ After `yarn build`, use the `pm-assistant` script:
 yarn pm-assistant "create onboarding system with auth and dashboard"
 ```
 
+### Target selection
+
+By default the CLI uses the `TARGET` value from `.env` (default: `github`). Override at runtime with `--target`:
+
+```bash
+yarn pm-assistant --target=jira "create onboarding system with auth and dashboard"
+```
+
+### GitHub-specific flags
+
 Use a specific repository (overrides `GITHUB_OWNER` / `GITHUB_REPO` for this run):
 
 ```bash
 yarn pm-assistant --owner=my-org --repo=my-repo "create onboarding"
-# or
-yarn pm-assistant --repo=my-repo --owner=my-org "create onboarding"
 ```
 
 You can mix flags and env: e.g. set `GITHUB_OWNER` in `.env` and pass only `--repo=other-repo`.
 
-**Model selection** (default: `gpt-4o`):
+### LLM provider selection
 
-- `--model=smart` → `gpt-4o`
-- `--model=fast` → `gpt-4o-mini`
-- `--model=gpt-4o` or `--model=gpt-4o-mini` → use that model ID directly
+By default the CLI uses `LLM_PROVIDER` from `.env` (default: `openai`). Override at runtime:
+
+```bash
+yarn pm-assistant --llm-provider=anthropic "create onboarding system"
+```
+
+**Model selection** — the alias maps depend on the provider:
+
+| Alias | OpenAI (default) | Anthropic |
+|-------|------------------|-----------|
+| `--model=smart` | `gpt-4o` | Claude Sonnet |
+| `--model=fast` | `gpt-4o-mini` | Claude Haiku |
+
+You can also pass full model IDs directly (e.g. `--model=gpt-4o-mini` or `--model=claude-sonnet-4-20250514`).
 
 Preview generated tasks **without** creating issues:
 
@@ -113,9 +149,9 @@ Pass `--` so Yarn forwards flags and the prompt to the script.
 ## What it does
 
 1. Reads your request from the CLI.
-2. Calls OpenAI (JSON mode) to produce a `tasks` array: `title`, `description` (Markdown: Context, Goal, Scope, Technical Notes, Acceptance Criteria; optional Out of Scope only when useful), and `labels`.
+2. Calls the configured LLM (OpenAI or Anthropic, JSON mode) to produce a `tasks` array: `title`, `description` (Markdown: Context, Goal, Scope, Technical Notes, Acceptance Criteria; optional Out of Scope only when useful), and `labels`.
 3. Validates structure, then applies quality rules (single primary label, no FE/BE mix in scope, concrete acceptance criteria, sane scope/size).
-4. Creates one GitHub issue per task, or logs them when `--dry-run` is set.
+4. Creates one GitHub issue or Jira ticket per task, or logs them when `--dry-run` is set.
 
 ### Labels
 
@@ -126,15 +162,22 @@ Each issue gets **exactly one** primary label (never `frontend` and `backend` to
 - `infra` — setup, configuration, CI/CD
 - `tech-debt` — refactoring or improvements
 
-Ensure these labels exist in your GitHub repository, or the Issues API may reject unknown labels (depending on repo settings).
+Ensure these labels exist in your GitHub repository (or Jira project), or the API may reject unknown labels (depending on repo/project settings).
 
 ## Project layout
 
-- `src/cli.ts` — Entrypoint, subcommand routing (`init` / run), env checks, orchestration
+- `src/cli.ts` — Entrypoint, subcommand routing (`init` / run), env checks, target + provider dispatch
 - `src/envFile.ts` — `.env` file read/merge/write helpers for `init`
-- `src/generateTasks.ts` — OpenAI prompt and parsing
-- `src/generateQuestions.ts` — Clarifying questions via OpenAI
-- `src/createIssues.ts` — Octokit issue creation / dry-run logging
+- `src/llm/` — LLM abstraction layer
+  - `types.ts` — `LlmProvider`, `ChatMessage`, `LlmJsonClient` interface
+  - `openaiAdapter.ts` — OpenAI SDK adapter (JSON object mode)
+  - `anthropicAdapter.ts` — Anthropic SDK adapter (Messages API)
+  - `factory.ts` — `createLlmJsonClient(provider, apiKey)` factory
+  - `index.ts` — barrel re-exports
+- `src/generateTasks.ts` — Task generation prompt, validation, repair pipeline
+- `src/generateQuestions.ts` — Clarifying questions via LLM
+- `src/createIssues.ts` — GitHub issue creation / dry-run logging
+- `src/createJiraIssues.ts` — Jira ticket creation / dry-run logging
 - `src/github.ts` — Octokit client factory
-- `src/openai.ts` — OpenAI client factory
+- `src/jira.ts` — Jira Cloud REST API client (native fetch + Basic auth)
 - `src/types.ts` — Shared types and validation
