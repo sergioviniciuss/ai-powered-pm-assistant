@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 import "dotenv/config";
 
+import readline from "node:readline/promises";
 import { createIssues } from "./createIssues.js";
 import { createOctokit } from "./github.js";
+import { generateClarifyingQuestions } from "./generateQuestions.js";
 import { generateTasks, resolveChatModelId } from "./generateTasks.js";
 import { createOpenAIClient } from "./openai.js";
 
 type ParsedCli = {
   prompt: string;
   dryRun: boolean;
+  interactive: boolean;
+  noInteractive: boolean;
   ownerFlag: string | undefined;
   repoFlag: string | undefined;
   modelFlag: string | undefined;
@@ -17,6 +21,8 @@ type ParsedCli = {
 const parseCliArgs = (argv: string[]): ParsedCli => {
   const tokens = argv.slice(2);
   let dryRun = false;
+  let interactive = false;
+  let noInteractive = false;
   let ownerFlag: string | undefined;
   let repoFlag: string | undefined;
   let modelFlag: string | undefined;
@@ -30,6 +36,16 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
 
     if (t === "--dry-run") {
       dryRun = true;
+      continue;
+    }
+
+    if (t === "--interactive") {
+      interactive = true;
+      continue;
+    }
+
+    if (t === "--no-interactive") {
+      noInteractive = true;
       continue;
     }
 
@@ -85,7 +101,7 @@ const parseCliArgs = (argv: string[]): ParsedCli => {
   }
 
   const prompt = positional.join(" ").trim();
-  return { prompt, dryRun, ownerFlag, repoFlag, modelFlag };
+  return { prompt, dryRun, interactive, noInteractive, ownerFlag, repoFlag, modelFlag };
 };
 
 const requireEnv = (name: string): string => {
@@ -135,8 +151,23 @@ const logError = (message: string): void => {
   console.error(message);
 };
 
+const shouldAskClarifyingQuestions = (input: string): boolean => {
+  const lower = input.toLowerCase();
+
+  const hasStructure =
+    lower.includes("context:") ||
+    lower.includes("requirements:") ||
+    lower.includes("user flow:") ||
+    lower.includes("constraints:");
+
+  const isShort = input.trim().length < 120;
+
+  return isShort || !hasStructure;
+};
+
 const main = async (): Promise<void> => {
-  const { prompt, dryRun, ownerFlag, repoFlag, modelFlag } = parseCliArgs(process.argv);
+  const { prompt, dryRun, interactive, noInteractive, ownerFlag, repoFlag, modelFlag } =
+    parseCliArgs(process.argv);
 
   if (prompt.length === 0) {
     logError(
@@ -183,11 +214,52 @@ const main = async (): Promise<void> => {
   }
 
   console.log("Step 1/3: Reading request from CLI — done.");
+
+  let enrichedPrompt = prompt;
+
+  const autoInteractive = shouldAskClarifyingQuestions(prompt);
+  const shouldAsk = interactive || (!noInteractive && autoInteractive);
+
+  if (shouldAsk) {
+    console.log("Step 1.5/3: Clarifying your request...");
+
+    try {
+      const questions = await generateClarifyingQuestions(openai, prompt);
+
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      let answersBlock = "";
+
+      for (const question of questions) {
+        const answer = await rl.question(`${question}\n> `);
+        if (answer.trim().length > 0) {
+          answersBlock += `- ${question} ${answer}\n`;
+        }
+      }
+
+      rl.close();
+
+      if (answersBlock.length > 0) {
+        enrichedPrompt = `${prompt}\n\nClarifications:\n${answersBlock}`;
+      }
+
+      console.log("Step 1.5/3: Clarifications collected.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logError(`Failed to generate clarification questions: ${msg}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   console.log("Step 2/3: Generating tasks with OpenAI...");
 
   let tasks;
   try {
-    tasks = await generateTasks(openai, prompt, chatModelId);
+    tasks = await generateTasks(openai, enrichedPrompt, chatModelId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     logError(`Failed to generate tasks: ${msg}`);

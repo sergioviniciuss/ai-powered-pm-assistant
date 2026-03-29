@@ -41,31 +41,6 @@ const canonicalizePrimaryLabel = (raw: string): PrimaryLabel => {
   throw new Error(`Invalid primary label: ${raw}`);
 };
 
-const buildAcceptanceCriteriaFromTask = (task: Task): string[] => {
-  const primary = task.labels[0]?.trim().toLowerCase() ?? "";
-  const titleT = task.title.trim();
-  const descT = task.description.trim();
-
-  if (primary === "backend") {
-    return [
-      "API returns expected response for valid input",
-      "Invalid input returns appropriate error response",
-    ];
-  }
-
-  if (primary === "frontend") {
-    return [
-      "UI renders correctly based on requirements",
-      "User interactions trigger expected behavior",
-    ];
-  }
-
-  return [
-    titleT.length > 0 ? `Deliverable satisfies: ${titleT}` : "Feature behaves according to requirements",
-    descT.length > 0 ? "Behavior matches the issue description" : "Edge cases are handled correctly",
-  ];
-};
-
 const stripAcceptanceCriteriaSection = (markdown: string): string => {
   const lines = markdown.split(/\r?\n/);
   const acIndex = lines.findIndex((line) => /^##\s+Acceptance Criteria/i.test(line.trim()));
@@ -74,6 +49,70 @@ const stripAcceptanceCriteriaSection = (markdown: string): string => {
   }
   return lines.slice(0, acIndex).join("\n").trimEnd();
 };
+
+const extractAcceptanceCriteriaContent = (markdown: string): string | null => {
+  const lines = markdown.split(/\r?\n/);
+  const acIndex = lines.findIndex((line) => /^##\s+Acceptance Criteria/i.test(line.trim()));
+  if (acIndex === -1) {
+    return null;
+  }
+  const body: string[] = [];
+  for (let i = acIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line === undefined) {
+      break;
+    }
+    if (/^##\s+/.test(line.trim())) {
+      break;
+    }
+    body.push(line);
+  }
+  const joined = body.join("\n").trim();
+  return joined.length > 0 ? joined : null;
+};
+
+const GENERIC_AC_PATTERN =
+  /(fully implemented|works as expected|functional|behaves correctly|handles.*gracefully|returns expected response|renders correctly|triggers expected behavior|appropriate error)/i;
+
+const hasGenericAcceptanceCriteria = (description: string): boolean => {
+  const ac = extractAcceptanceCriteriaContent(description);
+  if (ac === null) {
+    return false;
+  }
+  return GENERIC_AC_PATTERN.test(ac);
+};
+
+const buildFallbackAcceptanceCriteria = (task: Task): string[] => {
+  const primary = task.labels[0]?.trim().toLowerCase() ?? "";
+
+  if (primary === "backend") {
+    return [
+      "POST endpoint returns 200 for valid input",
+      "Returns 400 for invalid input",
+    ];
+  }
+
+  if (primary === "frontend") {
+    return [
+      "Form shows validation error for invalid input",
+      "User is redirected after successful submission",
+    ];
+  }
+
+  const titleT = task.title.trim();
+  const subject = titleT.length > 0 ? titleT : "Feature";
+  return [
+    `${subject} produces the correct output for valid input`,
+    `${subject} returns a clear error for invalid input`,
+  ];
+};
+
+const applyWordSubstitutions = (text: string): string =>
+  text
+    .replace(/\bdesign\b/gi, "implement")
+    .replace(/\bwireframe\b/gi, "UI")
+    .replace(/\bdiagram\b/gi, "")
+    .replace(/\buser flow\b/gi, "flow logic");
 
 const normalizeTask = (task: Task): Task => {
   const title = task.title.trim();
@@ -84,16 +123,20 @@ const normalizeTask = (task: Task): Task => {
     .replace(/\bdiagrams?\b/gi, "")
     .replace(/\buser flows?\b/gi, "flow logic");
 
-  const baseDescription = stripAcceptanceCriteriaSection(task.description)
-    .replace(/\bdesign\b/gi, "implement")
-    .replace(/\bwireframe\b/gi, "UI")
-    .replace(/\bdiagram\b/gi, "")
-    .replace(/\buser flow\b/gi, "flow logic")
-    .trim();
+  const baseDescription = applyWordSubstitutions(
+    stripAcceptanceCriteriaSection(task.description),
+  ).trim();
 
-  const acceptanceCriteria = buildAcceptanceCriteriaFromTask(task)
-    .map((c) => `* [ ] ${c}`)
-    .join("\n");
+  const existingAc = extractAcceptanceCriteriaContent(task.description);
+
+  let acceptanceCriteriaBlock: string;
+  if (existingAc !== null) {
+    acceptanceCriteriaBlock = applyWordSubstitutions(existingAc);
+  } else {
+    acceptanceCriteriaBlock = buildFallbackAcceptanceCriteria(task)
+      .map((c) => `* [ ] ${c}`)
+      .join("\n");
+  }
 
   return {
     ...task,
@@ -102,7 +145,7 @@ const normalizeTask = (task: Task): Task => {
 
 ## Acceptance Criteria
 
-${acceptanceCriteria}`,
+${acceptanceCriteriaBlock}`,
   };
 };
 
@@ -121,6 +164,10 @@ const validateGeneratedTaskQuality = (task: Task, index: number): string | null 
 
   if (title.trim().length === 0) {
     return `${prefix} Title must not be empty.`;
+  }
+
+  if (hasGenericAcceptanceCriteria(task.description)) {
+    return `${prefix} Acceptance Criteria is too generic. Use concrete, testable outcomes.`;
   }
 
   return null;
@@ -160,6 +207,46 @@ const tryRefineTasks = (tasks: Task[]): RefineTasksOutcome => {
     const validationErrorMessage = e instanceof Error ? e.message : String(e);
     return { success: false, validationErrorMessage };
   }
+};
+
+const AC_REPAIR_SYSTEM_PROMPT = `You are a senior QA engineer. Your job is to rewrite vague Acceptance Criteria into concrete, testable outcomes.
+
+Rewrite ONLY the Acceptance Criteria of these tasks.
+Make them concrete and testable.
+Avoid generic phrases like "works as expected", "fully implemented", "behaves correctly", "handles errors gracefully", "returns expected response", "renders correctly", "triggers expected behavior", "appropriate error".
+Use specific API responses, UI behavior, or state transitions.
+
+Output JSON: {"tasks":[{"title":"string","description":"string","labels":["string"]}]}
+
+Do NOT modify task titles, labels, or the non-AC parts of descriptions. Only rewrite the ## Acceptance Criteria section.`;
+
+const repairAcceptanceCriteria = async (
+  client: OpenAI,
+  model: string,
+  tasks: Task[],
+): Promise<Task[]> => {
+  const messages: ChatCompletionMessageParam[] = [
+    { role: "system", content: AC_REPAIR_SYSTEM_PROMPT },
+    { role: "user", content: JSON.stringify({ tasks }, null, 2) },
+  ];
+  const parsed = await fetchJsonObjectCompletion(client, model, messages);
+  const payload = assertTasksShape(parsed);
+  return payload.tasks;
+};
+
+const injectFallbackAcIfGeneric = (task: Task): Task => {
+  if (!hasGenericAcceptanceCriteria(task.description)) {
+    return task;
+  }
+  const base = stripAcceptanceCriteriaSection(task.description).trim();
+  const acBlock = buildFallbackAcceptanceCriteria(task)
+    .map((c) => `* [ ] ${c}`)
+    .join("\n");
+
+  return {
+    ...task,
+    description: `${base}\n\n## Acceptance Criteria\n\n${acBlock}`,
+  };
 };
 
 const REPAIR_SYSTEM_SUFFIX = `
@@ -229,6 +316,12 @@ Coverage: if multiple layers matter, cover them all; do not emit only one layer 
 
 Decomposition: one primary responsibility per issue, independently readable and implementable in part of a day; verifiable acceptance criteria; no umbrella tickets; merge or split for meaningful units, not noise.
 
+Non-overlapping responsibilities (strict):
+- Each task must own a distinct concern (e.g. registration, login, session, data retrieval).
+- Do NOT create separate tasks that would share implementation logic — merge them instead.
+- Token generation belongs inside login/authentication tasks, not as a standalone generic task.
+- If two tasks would touch the same endpoint, service method, or component, combine them into one.
+
 Non-executable tasks are strictly forbidden.
 
 Do NOT generate tasks that:
@@ -251,18 +344,36 @@ Description template (GitHub Markdown; concise; generic unless the user specifie
 Acceptance Criteria — include the "## Acceptance Criteria" section in every description, with 2–4 task-specific outcomes:
 - Each outcome must be on its own line, starting with "- " (plain dash, no brackets)
 - Each outcome must be specific to THIS task's title and scope — not generic
-- Do NOT write generic lines like "works as described" or "handles edge cases" — describe the actual expected behavior
+- Define exact inputs, exact outputs, and visible behavior
+- Do NOT write generic lines. The following are strictly forbidden:
+  - "API returns expected response"
+  - "UI renders correctly"
+  - "works as described"
+  - "handles edge cases"
+  - "returns appropriate error response"
+  - "behaves correctly"
+  - "triggers expected behavior"
 - Keep outcomes short and verifiable
 
-Example for a backend task titled "Create Password Reset Token":
+BAD acceptance criteria (never write these):
+- API returns expected response for valid input
+- Invalid input returns appropriate error response
+- UI renders correctly based on requirements
+- User interactions trigger expected behavior
+
+GOOD acceptance criteria (always write like these):
+
+Example for a backend task titled "Implement User Login API":
 ## Acceptance Criteria
-- POST /auth/reset-token returns a token for a valid email
-- Expired or unknown email returns 404 with a clear message
+- POST /auth/login returns a JWT token when credentials are valid
+- POST /auth/login returns 401 when email or password is incorrect
+- Missing email or password field returns 400 with a validation error
 
 Example for a frontend task titled "Implement Login Page UI":
 ## Acceptance Criteria
-- Login form renders email and password fields with submit button
-- Submitting with empty fields shows inline validation errors
+- Login form renders email and password fields with a submit button
+- Submitting with empty fields shows inline validation errors per field
+- Successful login redirects user to the dashboard
 
 ## Context
 
@@ -346,6 +457,21 @@ export const generateTasks = async (
   const secondRefine = tryRefineTasks(normalizedRepaired);
   if (secondRefine.success) {
     return secondRefine.tasks;
+  }
+
+  if (normalizedRepaired.some((t) => hasGenericAcceptanceCriteria(t.description))) {
+    const acRepaired = await repairAcceptanceCriteria(client, model, normalizedRepaired);
+    const acRepairedNormalized = acRepaired.map(normalizeTask);
+    const thirdRefine = tryRefineTasks(acRepairedNormalized);
+    if (thirdRefine.success) {
+      return thirdRefine.tasks;
+    }
+
+    const withFallbackAc = acRepairedNormalized.map(injectFallbackAcIfGeneric);
+    const fallbackRefine = tryRefineTasks(withFallbackAc);
+    if (fallbackRefine.success) {
+      return fallbackRefine.tasks;
+    }
   }
 
   throw new Error(
