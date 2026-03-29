@@ -2,15 +2,35 @@
   "name": "pm-assistant",
   "version": "1.0.0",
   "description": "PM assistant CLI: natural language to GitHub issues via OpenAI",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "pm-assistant": "dist/cli.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "README.md",
+    ".env.example"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
-    "pm-assistant": "node dist/cli.js"
+    "pm-assistant": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sergioviniciuss/ai-powered-pm-assistant.git"
+  },
+  "keywords": [
+    "cli",
+    "github",
+    "issues",
+    "openai",
+    "project-management",
+    "pm",
+    "tasks"
+  ],
   "engines": {
     "node": ">=22.0.0"
   },
