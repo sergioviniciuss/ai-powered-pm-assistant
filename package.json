@@ -16,7 +16,24 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "pm-assistant": "node dist/cli.js",
-    "prepublishOnly": "npm run build"
+    "commit": "cz",
+    "prepare": "husky"
+  },
+  "release": {
+    "branches": [
+      "main"
+    ],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      [
+        "@semantic-release/npm",
+        {
+          "prepareCmd": "npm run build"
+        }
+      ],
+      "@semantic-release/github"
+    ]
   },
   "repository": {
     "type": "git",
@@ -43,8 +60,24 @@
     "octokit": "^4.0.2",
     "openai": "^4.77.0"
   },
+  "commitlint": {
+    "extends": [
+      "@commitlint/config-conventional"
+    ]
+  },
+  "config": {
+    "commitizen": {
+      "path": "cz-conventional-changelog"
+    }
+  },
   "devDependencies": {
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
     "@types/node": "^24.0.0",
+    "commitizen": "^4.3.1",
+    "cz-conventional-changelog": "^3.3.0",
+    "husky": "^9.1.7",
+    "semantic-release": "^25.0.3",
     "tsx": "^4.19.3",
     "typescript": "^5.7.2"
   }
