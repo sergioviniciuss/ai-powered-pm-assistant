@@ -16,6 +16,7 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "pm-assistant": "node dist/cli.js",
+    "commit": "cz",
     "prepare": "husky"
   },
   "release": {
@@ -64,10 +65,17 @@
       "@commitlint/config-conventional"
     ]
   },
+  "config": {
+    "commitizen": {
+      "path": "cz-conventional-changelog"
+    }
+  },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
     "@commitlint/config-conventional": "^20.5.0",
     "@types/node": "^24.0.0",
+    "commitizen": "^4.3.1",
+    "cz-conventional-changelog": "^3.3.0",
     "husky": "^9.1.7",
     "semantic-release": "^25.0.3",
     "tsx": "^4.19.3",
